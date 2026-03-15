@@ -46,7 +46,19 @@
 #include <string>
 #include <functional>
 #include <boost/thread.hpp>
+#include <sys/mman.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include "source_drive_common.hpp"
+
+namespace {
+struct TimeshareStamp {
+  int64_t high;
+  int64_t low;
+};
+static bool timeshare_opened = false;
+static TimeshareStamp *timeshare_ptr = nullptr;
+}  // namespace
 
 class SourceDriver
 {
@@ -209,6 +221,11 @@ inline SourceDriver::~SourceDriver()
 inline void SourceDriver::Stop()
 {
   driver_ptr_->Stop();
+  if (timeshare_opened && timeshare_ptr != nullptr) {
+    munmap(timeshare_ptr, sizeof(TimeshareStamp));
+    timeshare_ptr = nullptr;
+    timeshare_opened = false;
+  }
 }
 
 inline void SourceDriver::SendPacket(const UdpFrame_t& msg, double timestamp)
@@ -218,7 +235,34 @@ inline void SourceDriver::SendPacket(const UdpFrame_t& msg, double timestamp)
 
 inline void SourceDriver::SendPointCloud(const LidarDecodedFrame<LidarPointXYZIRT>& msg)
 {
-  pub_->publish(ToRosMsg(msg, frame_id_));
+  auto ros_msg = ToRosMsg(msg, frame_id_);
+  pub_->publish(ros_msg);
+
+  uint64_t stamp_ns = (uint64_t)ros_msg.header.stamp.sec * 1000000000ULL
+                    + (uint64_t)ros_msg.header.stamp.nanosec;
+  if (!timeshare_opened) {
+    const char *user_name = getlogin();
+    std::string path = "/home/" + std::string(user_name) + "/timeshare";
+    int fd = open(path.c_str(), O_CREAT | O_RDWR | O_TRUNC, 0666);
+    if (fd != -1) {
+      lseek(fd, sizeof(TimeshareStamp), SEEK_SET);
+      write(fd, "", 1);
+      timeshare_ptr = (TimeshareStamp *)mmap(NULL, sizeof(TimeshareStamp),
+          PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+      close(fd);
+      if (timeshare_ptr != MAP_FAILED) {
+        timeshare_ptr->high = 0;
+        timeshare_ptr->low = 0;
+        timeshare_opened = true;
+        printf("[hesai_ros_driver] Timeshare file created at: %s\n", path.c_str());
+      } else {
+        timeshare_ptr = nullptr;
+      }
+    }
+  }
+  if (timeshare_opened && timeshare_ptr != nullptr) {
+    timeshare_ptr->low = stamp_ns;
+  }
 }
 
 inline void SourceDriver::SendCorrection(const u8Array_t& msg)
@@ -297,9 +341,10 @@ inline sensor_msgs::msg::PointCloud2 SourceDriver::ToRosMsg(const LidarDecodedFr
     ++iter_ring_;
     ++iter_timestamp_;   
   }
-  // printf("HesaiLidar Runing Status [standby mode:%u]  |  [speed:%u]\n", frame.work_mode, frame.spin_speed);
-  printf("%s frame:%d points:%u packet:%d start time:%lf end time:%lf\n", prefix, frame_index, points_number, packet_number, frame_start_timestamp, frame_end_timestamp) ;
-  std::cout.flush();
+  if (frame_index % 100 == 0) {
+    printf("%s frame:%d points:%u packet:%d start time:%lf end time:%lf\n", prefix, frame_index, points_number, packet_number, frame_start_timestamp, frame_end_timestamp);
+    std::cout.flush();
+  }
   auto sec = (uint64_t)floor(frame_start_timestamp);
   if (sec <= std::numeric_limits<int32_t>::max()) {
     ros_msg.header.stamp.sec = (uint32_t)floor(frame_start_timestamp);

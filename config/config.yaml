@@ -11,8 +11,8 @@ lidar:
 
         use_ptc_connected: true                       # Set to false when ptc connection is not used
         host_ptc_port: 0                              # PTC source port, 0 means auto
-        correction_file_path: "Your correction file path"   # The path of correction file
-        firetimes_path: "Your firetime file path"           # The path of firetimes file
+        correction_file_path: ""                      # The path of correction file (auto-retrieved from LiDAR)
+        firetimes_path: ""                            # The path of firetimes file
 
         recv_point_cloud_timeout: -1                  # The timeout of receiving point cloud
         ptc_connect_timeout: -1                       # The timeout of ptc connection
@@ -52,7 +52,7 @@ lidar:
       use_timestamp_type: 0                 # 0 use point cloud timestamp; 1 use receive timestamp
       frame_start_azimuth: 0                # Frame azimuth for Pandar128, range from 1 to 359, set it less than 0 if you do not want to use it      
       # parser thread num
-      thread_num: 4
+      thread_num: 2
       # transform param
       transform_flag: false
       x: 0
@@ -77,7 +77,7 @@ lidar:
       echo_mode_filter: 0                   # return mode filter
 
     ros:
-      ros_frame_id: hesai_lidar                       # Frame id of packet message and point cloud message
+      ros_frame_id: laser_frame                       # Frame id of packet message and point cloud message (matches URDF)
       ros_recv_packet_topic: /lidar_packets           # Topic used to receive lidar packets from rosbag
       ros_send_packet_topic: /lidar_packets           # Topic used to send lidar raw packets through ROS
       ros_send_point_cloud_topic: /lidar_points       # Topic used to send point cloud through ROS
