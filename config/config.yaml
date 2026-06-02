@@ -54,12 +54,14 @@ lidar:
       # parser thread num
       thread_num: 2
       # transform param
+      # transform_flag: true
       transform_flag: false
       x: 0
       y: 0
       z: 0
       roll: 0
       pitch: 0
+      # yaw: 3.14159265
       yaw: 0
       # fov config, [fov_start, fov_end] range [1, 359], [-1, -1]means use default
       fov_start: -1

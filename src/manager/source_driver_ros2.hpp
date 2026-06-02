@@ -49,6 +49,8 @@
 #include <sys/mman.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <pwd.h>
+#include <cstdlib>
 #include "source_drive_common.hpp"
 
 namespace {
@@ -58,6 +60,27 @@ struct TimeshareStamp {
 };
 static bool timeshare_opened = false;
 static TimeshareStamp *timeshare_ptr = nullptr;
+
+/** getlogin() is NULL without a controlling TTY (systemd / detached spawn) — would crash in std::string(nullptr). */
+inline const char *ResolveUnixUsernameForTimesharePath() {
+  const char *p = getlogin();
+  if (p != nullptr && p[0] != '\0') {
+    return p;
+  }
+  p = std::getenv("USER");
+  if (p != nullptr && p[0] != '\0') {
+    return p;
+  }
+  p = std::getenv("LOGNAME");
+  if (p != nullptr && p[0] != '\0') {
+    return p;
+  }
+  struct passwd *pw = getpwuid(getuid());
+  if (pw != nullptr && pw->pw_name != nullptr && pw->pw_name[0] != '\0') {
+    return pw->pw_name;
+  }
+  return "reflekt";
+}
 }  // namespace
 
 class SourceDriver
@@ -241,7 +264,7 @@ inline void SourceDriver::SendPointCloud(const LidarDecodedFrame<LidarPointXYZIR
   uint64_t stamp_ns = (uint64_t)ros_msg.header.stamp.sec * 1000000000ULL
                     + (uint64_t)ros_msg.header.stamp.nanosec;
   if (!timeshare_opened) {
-    const char *user_name = getlogin();
+    const char *user_name = ResolveUnixUsernameForTimesharePath();
     std::string path = "/home/" + std::string(user_name) + "/timeshare";
     int fd = open(path.c_str(), O_CREAT | O_RDWR | O_TRUNC, 0666);
     if (fd != -1) {
