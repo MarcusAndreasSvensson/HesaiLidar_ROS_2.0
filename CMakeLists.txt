@@ -100,7 +100,7 @@ if($ENV{ROS_VERSION} MATCHES "1")
     "UdpFrame.msg"
     "LossPacket.msg"
     "Ptp.msg"
-    "Firetime.msg"
+    "SyncHealth.msg"
   )
 
   generate_messages(
@@ -141,7 +141,7 @@ if($ENV{ROS_VERSION} MATCHES "2")
     rosidl_generate_interfaces(${PROJECT_NAME}
       "msg/msg_ros2/UdpPacket.msg"
       "msg/msg_ros2/UdpFrame.msg"
-      "msg/msg_ros2/Firetime.msg"
+      "msg/msg_ros2/SyncHealth.msg"
       "msg/msg_ros2/Ptp.msg"
       "msg/msg_ros2/LossPacket.msg"
       DEPENDENCIES builtin_interfaces std_msgs
@@ -187,6 +187,17 @@ set(LIB_TARGETS
     udpParser_lib
     )
 
+# SDK V2.0.12 made hesai_sdk_lib / lidar_lib / udpParser_lib INTERFACE
+# (header-only) targets. They link fine but produce no artifact, so they must be
+# excluded from install(TARGETS ...) (which evaluates $<TARGET_FILE:...>).
+set(LIB_TARGETS_INSTALL
+    log_lib
+    ptcClient_lib
+    source_lib
+    platutils_lib
+    serialClient_lib
+    )
+
 if(${CUDA_FOUND})
   add_executable(hesai_ros_driver_node
     node/hesai_ros_driver_node.cu
@@ -194,6 +205,10 @@ if(${CUDA_FOUND})
     )
   set(LIB_TARGETS
     ${LIB_TARGETS}
+    udpParserGpu_lib
+    )
+  set(LIB_TARGETS_INSTALL
+    ${LIB_TARGETS_INSTALL}
     udpParserGpu_lib
     )
 else()
@@ -219,7 +234,7 @@ target_include_directories(hesai_ros_driver_node PRIVATE
 #Ros#
 if($ENV{ROS_VERSION} MATCHES "1")
   target_link_libraries(hesai_ros_driver_node  ${ROS_LIBS})
-  install(TARGETS hesai_ros_driver_node ${LIB_TARGETS}
+  install(TARGETS hesai_ros_driver_node ${LIB_TARGETS_INSTALL}
           RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
           LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
           ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION})
@@ -256,7 +271,7 @@ endif()
           hesai_ros_driver_node
           DESTINATION lib/${PROJECT_NAME})
   install(TARGETS
-          ${LIB_TARGETS}
+          ${LIB_TARGETS_INSTALL}
           DESTINATION lib)
 
   install(DIRECTORY

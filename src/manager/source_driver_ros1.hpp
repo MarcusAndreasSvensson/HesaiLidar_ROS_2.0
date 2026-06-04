@@ -36,7 +36,6 @@
 #include "hesai_ros_driver/UdpPacket.h"
 #include "hesai_ros_driver/LossPacket.h"
 #include "hesai_ros_driver/Ptp.h"
-#include "hesai_ros_driver/Firetime.h"
 #include <sensor_msgs/Imu.h>
 #include <boost/thread.hpp>
 #include "source_drive_common.hpp"
@@ -73,8 +72,6 @@ protected:
   void SendPacketLoss(const uint32_t& total_packet_count, const uint32_t& total_packet_loss_count);
   // Used to publish the Packet loss condition
   void SendPTP(const uint8_t& ptp_lock_offset, const u8Array_t& ptp_status);
-  // Used to publish the firetime correction 
-  void SendFiretime(const double *firetime_correction_);
   // Used to publish the imu packet
   void SendImuConfig(const LidarImuData& msg);
   // Convert ptp lock offset, status into ROS message
@@ -87,8 +84,6 @@ protected:
   sensor_msgs::PointCloud2 ToRosMsg(const LidarDecodedFrame<LidarPointXYZIRT>& frame, const std::string& frame_id);
   // Convert packets into ROS messages
   hesai_ros_driver::UdpFrame ToRosMsg(const UdpFrame_t& ros_msg, double timestamp);
-  // Convert double[512] to float64[512]
-  hesai_ros_driver::Firetime ToRosMsg(const double *firetime_correction_);
   // Convert imu, imu into ROS message
   sensor_msgs::Imu ToRosMsg(const LidarImuData& firetime_correction_);
   // Convert Linear Acceleration from g to m/s^2
@@ -107,7 +102,6 @@ protected:
   boost::thread* subscription_spin_thread_;
 
   ros::Publisher crt_pub_;
-  ros::Publisher firetime_pub_;
   ros::Publisher loss_pub_;
   ros::Publisher ptp_pub_;
   ros::Subscriber crt_sub_;
@@ -145,12 +139,6 @@ inline void SourceDriver::Init(const YAML::Node& config)
       crt_pub_ = nh_->advertise<std_msgs::UInt8MultiArray>(driver_param.input_param.ros_send_correction_topic, 10);
     } 
   }
-  if (! driver_param.input_param.firetimes_path.empty() ) {
-    if (driver_param.input_param.ros_send_firetime_topic != NULL_TOPIC) {
-      firetime_pub_ = nh_->advertise<hesai_ros_driver::Firetime>(driver_param.input_param.ros_send_firetime_topic, 10);
-    } 
-  }
-
   if (driver_param.input_param.send_packet_ros) {
     pkt_pub_ = nh_->advertise<hesai_ros_driver::UdpFrame>(driver_param.input_param.ros_send_packet_topic, 10);
   }
@@ -235,11 +223,6 @@ inline void SourceDriver::SendPacketLoss(const uint32_t& total_packet_count, con
 inline void SourceDriver::SendPTP(const uint8_t& ptp_lock_offset, const u8Array_t& ptp_status)
 {
   ptp_pub_.publish(ToRosMsg(ptp_lock_offset, ptp_status));
-}
-
-inline void SourceDriver::SendFiretime(const double *firetime_correction_)
-{
-  firetime_pub_.publish(ToRosMsg(firetime_correction_));
 }
 
 inline void SourceDriver::SendImuConfig(const LidarImuData& msg)
@@ -349,13 +332,6 @@ inline hesai_ros_driver::Ptp SourceDriver::ToRosMsg(const uint8_t& ptp_lock_offs
   hesai_ros_driver::Ptp msg;
   msg.ptp_lock_offset = ptp_lock_offset;
   std::copy(ptp_status.begin(), ptp_status.begin() + std::min(16ul, ptp_status.size()), msg.ptp_status.begin());
-  return msg;
-}
-
-inline hesai_ros_driver::Firetime SourceDriver::ToRosMsg(const double *firetime_correction_)
-{
-  hesai_ros_driver::Firetime msg;
-  std::copy(firetime_correction_, firetime_correction_ + 512, msg.data.begin());
   return msg;
 }
 

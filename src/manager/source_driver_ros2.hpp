@@ -37,10 +37,11 @@
 #include <hesai_ros_driver/msg/udp_frame.hpp>
 #include <hesai_ros_driver/msg/udp_packet.hpp>
 #include <hesai_ros_driver/msg/ptp.hpp>
-#include <hesai_ros_driver/msg/firetime.hpp>
+#include <hesai_ros_driver/msg/sync_health.hpp>
 #include <hesai_ros_driver/msg/loss_packet.hpp>
 
 #include <fstream>
+#include <cmath>
 #include <memory>
 #include <chrono>
 #include <string>
@@ -114,8 +115,8 @@ protected:
   void SendPacketLoss(const uint32_t& total_packet_count, const uint32_t& total_packet_loss_count);
   // Used to publish the Packet loss condition
   void SendPTP(const uint8_t& ptp_lock_offset, const u8Array_t& ptp_status);
-  // Used to publish the firetime correction 
-  void SendFiretime(const double *firetime_correction_);
+  // Per-packet lidar-vs-host clock sync health monitor (every_pkt_cb_).
+  void SendSyncHealth(const UdpPacket& packet, double lidar_time_sec);
   // Used to publish the imu packet
   void SendImuConfig(const LidarImuData& msg);
 
@@ -125,8 +126,6 @@ protected:
   hesai_ros_driver::msg::LossPacket ToRosMsg(const uint32_t& total_packet_count, const uint32_t& total_packet_loss_count);
   // Convert correction string into ROS messages
   std_msgs::msg::UInt8MultiArray ToRosMsg(const u8Array_t& correction_string);
-  // Convert double[512] to float64[512]
-  hesai_ros_driver::msg::Firetime ToRosMsg(const double *firetime_correction_);
   // Convert point clouds into ROS messages
   sensor_msgs::msg::PointCloud2 ToRosMsg(const LidarDecodedFrame<LidarPointXYZIRT>& frame, const std::string& frame_id);
   // Convert packets into ROS messages
@@ -143,7 +142,14 @@ protected:
   rclcpp::Subscription<hesai_ros_driver::msg::UdpFrame>::SharedPtr pkt_sub_;
   rclcpp::Publisher<hesai_ros_driver::msg::UdpFrame>::SharedPtr pkt_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_;
-  rclcpp::Publisher<hesai_ros_driver::msg::Firetime>::SharedPtr firetime_pub_;
+  rclcpp::Publisher<hesai_ros_driver::msg::SyncHealth>::SharedPtr sync_pub_;
+  // Sync-health monitor state (lidar master time vs host CLOCK_REALTIME).
+  bool sync_ema_init_ = false;
+  double sync_ema_residual_ = 0.0;
+  double sync_win_min_ = 0.0;
+  double sync_win_max_ = 0.0;
+  uint64_t sync_packet_count_ = 0;
+  uint64_t sync_last_pub_sec_ = 0;
   rclcpp::Publisher<std_msgs::msg::UInt8MultiArray>::SharedPtr crt_pub_;
   rclcpp::Publisher<hesai_ros_driver::msg::LossPacket>::SharedPtr loss_pub_;
   rclcpp::Publisher<hesai_ros_driver::msg::Ptp>::SharedPtr ptp_pub_;
@@ -180,10 +186,8 @@ inline void SourceDriver::Init(const YAML::Node& config)
       crt_pub_ = node_ptr_->create_publisher<std_msgs::msg::UInt8MultiArray>(driver_param.input_param.ros_send_correction_topic, 10);
     }
   }
-  if (! driver_param.input_param.firetimes_path.empty() ) {
-    if (driver_param.input_param.ros_send_firetime_topic != NULL_TOPIC) {
-      firetime_pub_ = node_ptr_->create_publisher<hesai_ros_driver::msg::Firetime>(driver_param.input_param.ros_send_firetime_topic, 10);
-    } 
+  if (driver_param.input_param.ros_send_every_packet_topic != NULL_TOPIC) {
+    sync_pub_ = node_ptr_->create_publisher<hesai_ros_driver::msg::SyncHealth>(driver_param.input_param.ros_send_every_packet_topic, 10);
   }
 
   if (driver_param.input_param.send_packet_ros) {
@@ -215,6 +219,11 @@ inline void SourceDriver::Init(const YAML::Node& config)
   }
   if (driver_param.input_param.ros_send_packet_loss_topic != NULL_TOPIC) {
     driver_ptr_->RegRecvCallback(std::bind(&SourceDriver::SendPacketLoss, this, std::placeholders::_1, std::placeholders::_2));
+  }
+  if (driver_param.input_param.ros_send_every_packet_topic != NULL_TOPIC) {
+    // Per-packet callback: SendSyncHealth(const UdpPacket&, double) selects the
+    // UdpPacket RegRecvCallback overload unambiguously (distinct from UdpFrame_t).
+    driver_ptr_->RegRecvCallback(std::bind(&SourceDriver::SendSyncHealth, this, std::placeholders::_1, std::placeholders::_2));
   }
   if (driver_param.input_param.source_type == DATA_FROM_LIDAR) {
     if (driver_param.input_param.ros_send_correction_topic != NULL_TOPIC) {
@@ -303,9 +312,62 @@ inline void SourceDriver::SendPTP(const uint8_t& ptp_lock_offset, const u8Array_
   ptp_pub_->publish(ToRosMsg(ptp_lock_offset, ptp_status));
 }
 
-inline void SourceDriver::SendFiretime(const double *firetime_correction_)
+inline void SourceDriver::SendSyncHealth(const UdpPacket& packet, double lidar_time_sec)
 {
-  firetime_pub_->publish(ToRosMsg(firetime_correction_));
+  // host_time: CLOCK_REALTIME at packet receive (SDK GetMicroTimeU64 == gettimeofday).
+  if (packet.recv_timestamp == 0 || lidar_time_sec <= 0.0) {
+    return;
+  }
+  const double host_time_sec = static_cast<double>(packet.recv_timestamp) / 1e6;
+  const double residual = lidar_time_sec - host_time_sec;
+
+  if (!sync_ema_init_) {
+    sync_ema_residual_ = residual;
+    sync_win_min_ = residual;
+    sync_win_max_ = residual;
+    sync_ema_init_ = true;
+  } else {
+    // ~0.01 weight: smooth jitter while still tracking slow drift.
+    sync_ema_residual_ = 0.01 * residual + 0.99 * sync_ema_residual_;
+    if (residual < sync_win_min_) sync_win_min_ = residual;
+    if (residual > sync_win_max_) sync_win_max_ = residual;
+  }
+  sync_packet_count_++;
+
+  // Throttle publish + log to ~1 Hz (on host-second rollover).
+  const uint64_t host_sec = packet.recv_timestamp / 1000000ULL;
+  if (host_sec == sync_last_pub_sec_) {
+    return;
+  }
+  sync_last_pub_sec_ = host_sec;
+
+  hesai_ros_driver::msg::SyncHealth msg;
+  msg.header.stamp.sec = static_cast<int32_t>(host_sec);
+  msg.header.stamp.nanosec =
+    static_cast<uint32_t>((packet.recv_timestamp % 1000000ULL) * 1000ULL);
+  msg.header.frame_id = frame_id_;
+  msg.lidar_time_sec = lidar_time_sec;
+  msg.host_time_sec = host_time_sec;
+  msg.residual_sec = residual;
+  msg.ema_residual_sec = sync_ema_residual_;
+  msg.min_residual_sec = sync_win_min_;
+  msg.max_residual_sec = sync_win_max_;
+  msg.packet_count = sync_packet_count_;
+  if (sync_pub_) {
+    sync_pub_->publish(msg);
+  }
+
+  // Warn when lidar and host disagree by > 2 ms (likely PPS/NMEA/chrony unlock).
+  if (std::fabs(sync_ema_residual_) > 2e-3) {
+    printf("[hesai_ros_driver] WARN sync residual %.3f ms (min %.3f max %.3f ms) "
+           "- check PPS/NMEA/chrony lock\n",
+           sync_ema_residual_ * 1e3, sync_win_min_ * 1e3, sync_win_max_ * 1e3);
+    std::cout.flush();
+  }
+
+  // Reset window extrema each publish interval.
+  sync_win_min_ = residual;
+  sync_win_max_ = residual;
 }
 
 inline void SourceDriver::SendImuConfig(const LidarImuData& msg)
@@ -419,13 +481,6 @@ inline hesai_ros_driver::msg::Ptp SourceDriver::ToRosMsg(const uint8_t& ptp_lock
   hesai_ros_driver::msg::Ptp msg;
   msg.ptp_lock_offset = ptp_lock_offset;
   std::copy(ptp_status.begin(), ptp_status.begin() + std::min(16ul, ptp_status.size()), msg.ptp_status.begin());
-  return msg;
-}
-
-inline hesai_ros_driver::msg::Firetime SourceDriver::ToRosMsg(const double *firetime_correction_)
-{
-  hesai_ros_driver::msg::Firetime msg;
-  std::copy(firetime_correction_, firetime_correction_ + 512, msg.data.begin());
   return msg;
 }
 
