@@ -14,7 +14,10 @@ configure_file(
 )
 
 set(WITH_PTCS_USE ON CACHE BOOL "Use Ptcs")
-# set(FIND_CUDA ON CACHE BOOL "Find CUDA")
+# Enable CUDA point-cloud parsing. Auto-falls back to CPU when no toolkit is
+# found (CUDA_FOUND guards everything below), so CPU-only builds still work.
+# Runtime CPU-vs-GPU is then selected by `use_gpu` in config.yaml (no rebuild).
+set(FIND_CUDA ON CACHE BOOL "Find CUDA")
 
 if(FIND_CUDA)
     find_package(CUDA )
@@ -25,8 +28,8 @@ if(${CUDA_FOUND})
 	set(CUDA_SEPARABLE_COMPILATION ON)
 	include_directories(${CUDA_INCLUDE_DIRS})
 	set(CUDA_PROPAGATE_HOST_FLAGS OFF)
-	set(CUDA_NVCC_FLAGS -arch=sm_61;-O3;-G;-g;)#根据具体GPU性能更改算力参数
-	link_directories($ENV{CUDA_PATH}/lib/x64)
+	set(CUDA_NVCC_FLAGS -arch=sm_87;-O3;)# sm_87 = Jetson Orin (Ampere). Dropped -G/-g (device-debug codegen cripples GPU perf).
+	link_directories(${CUDA_TOOLKIT_ROOT_DIR}/lib64)# Jetson/Linux aarch64 (was desktop $ENV{CUDA_PATH}/lib/x64)
 
   add_definitions(-DUSE_CUDA)
   set(FIND_CUDA ON CACHE BOOL "Use Cuda")
