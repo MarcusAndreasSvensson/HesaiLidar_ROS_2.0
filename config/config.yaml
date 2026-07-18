@@ -89,6 +89,6 @@ lidar:
       # ros_send_correction_topic: /lidar_corrections # Topic used to send correction through ROS
       ros_send_every_packet_topic: /lidar_sync_health # Per-packet lidar-vs-host(REALTIME) clock sync health monitor
       # ros_send_ptp_topic: /lidar_ptp                # Topic used to send PTP lock status, offset through ROS
-      send_packet_ros: false                          # true: Send packets through ROS 
+      send_packet_ros: true                           # true: Send packets through ROS (record /lidar_packets)
       send_point_cloud_ros: true                      # true: Send point cloud through ROS    
       send_imu_ros: true                              # true: Send imu through ROS    
